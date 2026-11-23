@@ -1,0 +1,45 @@
+# Releases a scheduled week. Marquee.Sim's `pack` command signs index.json with only the packs out by today, and
+# queue/<date>.json for each later release date. Each day this moves the newest queued index that's due into place and
+# drops the queued ones it passes. Nothing here signs anything: the key stays on the publisher's machine.
+name: Release scheduled packs
+on:
+  schedule:
+    - cron: "0 8 * * *" # 08:00 UTC, early morning in the US
+  workflow_dispatch:
+permissions:
+  contents: write
+  pages: write
+concurrency: release
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Move the due index into place
+        id: move
+        run: |
+          today=$(date -u +%F)
+          due=""
+          for f in queue/*.json; do
+            [ -e "$f" ] || continue
+            d=$(basename "$f" .json)
+            if [[ ! "$d" > "$today" ]]; then due="$f"; fi
+          done
+          if [ -z "$due" ]; then echo "Nothing due by $today."; exit 0; fi
+          cp "$due" index.json
+          for f in queue/*.json; do
+            d=$(basename "$f" .json)
+            if [[ ! "$d" > "$today" ]]; then git rm -q "$f"; fi
+          done
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.json
+          git commit -m "Release the week queued for $(basename "$due" .json)"
+          git push
+          echo "released=true" >> "$GITHUB_OUTPUT"
+      # A push with this workflow's token may not start a Pages build on its own, so ask for one.
+      - name: Deploy
+        if: steps.move.outputs.released == 'true'
+        run: gh api -X POST "repos/${{ github.repository }}/pages/builds"
+        env:
+          GH_TOKEN: ${{ github.token }}
